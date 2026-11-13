@@ -40,12 +40,27 @@ La collezione contiene 12 carte; il mazzo ne include esattamente 8 diverse. Dal 
 
 La Palla di fuoco può essere lanciata in tutta l'arena, infligge 420 danni alle truppe nemiche nel raggio di 90 e 200 danni alle torri colpite, con un indicatore visibile. Le truppe alleate sono immuni.
 
-Per il multiplayer: apri Sfida un amico, crea una stanza e condividi il link. Il destinatario sceglie il proprio mazzo e preme Entra nella sfida. La simulazione Rust dell'host è autorevole: valida le mosse, disattiva il bot e invia lo stato all'ospite con coordinate e squadre invertite. L'ospite non simula autonomamente la partita. La pausa è disabilitata online; una disconnessione termina la sessione. Entrambi devono tenere la pagina aperta e in primo piano.
+Per il multiplayer: apri Sfida un amico, crea una stanza e condividi il link. Il destinatario sceglie il proprio mazzo e preme Entra nella sfida. La simulazione Rust dell'host è autorevole: valida le mosse, disattiva il bot e invia lo stato all'ospite con coordinate e squadre invertite. L'ospite non simula autonomamente la partita. La pausa è disabilitata online; una disconnessione temporanea avvia la riconnessione e sospende la simulazione dell’host fino al rientro. Entrambi devono tenere la pagina aperta e in primo piano durante il gioco.
 
-La segnalazione usa il servizio pubblico PeerJS, con client 1.5.5 da jsDelivr e STUN Google. Il traffico di gioco passa su WebRTC DataChannel. Non è configurato un relay TURN: reti restrittive possono impedire il collegamento. Gli invitati devono avere accesso alla pagina web; i link non aggirano la privacy dell'hosting. Non è stato eseguito un test fra due browser su reti reali.
+La segnalazione usa il servizio pubblico PeerJS, con client 1.5.5 distribuito localmente in `dist/vendor/` (licenza inclusa) e configurazione ICE predefinita di PeerJS, comprensiva di STUN e relay TURN. Il traffico di gioco passa su WebRTC DataChannel. I relay pubblici dipendono dalla disponibilità del servizio PeerJS; eventuali reti che bloccano anche questi endpoint possono impedire il collegamento. Gli invitati devono avere accesso alla pagina web; i link non aggirano la privacy dell'hosting. Non è stato eseguito un test fra due browser su reti reali.
 
 Verifica aggiuntiva dell'interfaccia e del protocollo host/guest, con due istanze WASM reali e trasporto simulato:
 
 ```sh
 node --experimental-vm-modules tests/ui.mjs
 ```
+
+
+## Correzione inviti e reti mobili (13 novembre 2026)
+
+- La configurazione ICE personalizzata solo STUN è stata rimossa: ora vengono utilizzati anche i relay TURN predefiniti di PeerJS 1.5.5.
+- La stanza dell'host non scade dopo due minuti di attesa.
+- Errori temporanei del servizio inviti attivano la riconnessione mantenendo lo stesso link.
+- Il ritorno dal foglio di condivisione del telefono e gli eventi di rete/pagina tentano il ripristino del collegamento.
+- In caso di disconnessione dell'amico la partita viene sospesa per un massimo di 90 secondi. Il rientro dello stesso peer riceve lo stato corrente senza ricominciare la partita.
+- Sono ignorati callback e timer di sessioni precedenti; i timer vengono rimossi quando si chiude una stanza.
+- È disponibile un pulsante Copia link separato dalla condivisione nativa.
+
+Per aggiornare l'hosting Docker: eseguire `git pull` nel checkout effettivamente usato dal deployment, quindi ricostruire/riavviare esclusivamente il servizio del gioco se gli asset sono copiati nell'immagine. Se `dist/` è montata come volume, aggiornare quella directory è sufficiente. La configurazione Docker e del reverse proxy dipende dal proprio server: questo progetto non la modifica. Ricaricare entrambi i browser, creare un nuovo invito e aprirlo sul secondo dispositivo. Non servono modifiche al modulo WASM per questa correzione.
+
+I test `tests/ui.mjs` includono condivisione mobile simulata, perdita del servizio inviti, stabilità del link, rientro nella partita, retry di host temporaneamente non disponibile e callback obsoleti. La verifica su dispositivi e reti reali resta necessaria.

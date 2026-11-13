@@ -27,7 +27,7 @@ function togglePause(){if(net.role){toast('La partita online non può essere mes
 $('#start').onclick=()=>{if(!wasm)return;if(paused){togglePause();return;}begin();};$('#pause').onclick=togglePause;$('#restart').onclick=()=>{if(!wasm)return;if(started&&!wasm.value(2,0)){paused=true;showOverlay('Un nuovo inizio?','Premi il pulsante per ricominciare la battaglia.','Ricomincia');paused=false;started=false;}else begin();};$('#deck').onclick=e=>{const el=e.target.closest('[data-slot]');if(el)select(+el.dataset.slot);};
 function pos(e){let r=canvas.getBoundingClientRect();return{x:(e.clientX-r.left)/r.width*600,y:(e.clientY-r.top)/r.height*720};}canvas.addEventListener('pointermove',e=>pointer=pos(e));canvas.addEventListener('pointerleave',()=>pointer=null);canvas.addEventListener('pointerdown',e=>{if(!started||paused||selected<0||wasm.value(2,0))return;let p=pos(e),spell=wasm.value(5,selected)===3;if(net.role==='guest'){send({type:'play',slot:selected,x:p.x,y:720-p.y});selected=-1;lastHand='';return;}let r=wasm.play(selected,p.x,p.y);if(r===1){selected=-1;lastHand='';beep(520);toast(spell?'Palla di fuoco! 420 danni ad area · 200 alle torri':'Truppa schierata!');}else if(r===-1)toast('Serve più elisir. Aspetta un momento.');else toast('Schiera le truppe nella tua metà dell’arena.');});
 document.addEventListener('keydown',e=>{if($('#instructions').open)return;if(e.code==='Space'){e.preventDefault();togglePause();}if('1234'.includes(e.key))select(+e.key-1);});$('#sound').onclick=()=>{sound=!sound;$('#sound').style.color=sound?'#d4ed8a':'';$('#sound').title=sound?'Disattiva audio':'Attiva audio';$('#sound').setAttribute('aria-label',$('#sound').title);beep();};$('#help').onclick=()=>{if(started&&!paused&&!wasm.value(2,0))togglePause();$('#instructions').showModal();};$('#close-help').onclick=$('#got-it').onclick=()=>$('#instructions').close();document.addEventListener('visibilitychange',()=>{if(document.hidden&&started&&!paused&&wasm.value(2,0)===0)togglePause();});
-let prevResult=0;function frame(t){let dt=last?Math.min((t-last)/1000,.1):0;last=t;if(started&&!paused&&net.role!=='guest')wasm.tick(dt);const result=wasm.value(2,0);if(result&&result!==prevResult){recordResult(result);showOverlay(result===1?'La corona è tua.':result===2?'Il regno resisterà.':'Degni avversari.',result===1?'Vittoria! Hai conquistato l’arena.':result===2?'Sconfitta. Cambia strategia e riprova.':'Pareggio. È tempo di una rivincita.','Gioca ancora',result===2?'♜':'♛');selected=-1;beep(result===1?880:220);}prevResult=result;render(t);updateUI();syncOnline(t);requestAnimationFrame(frame);}
+let prevResult=0;function frame(t){let dt=last?Math.min((t-last)/1000,.1):0;last=t;if(started&&!paused&&!net.suspended&&net.role!=='guest')wasm.tick(dt);const result=wasm.value(2,0);if(result&&result!==prevResult){recordResult(result);showOverlay(result===1?'La corona è tua.':result===2?'Il regno resisterà.':'Degni avversari.',result===1?'Vittoria! Hai conquistato l’arena.':result===2?'Sconfitta. Cambia strategia e riprova.':'Pareggio. È tempo di una rivincita.','Gioca ancora',result===2?'♜':'♛');selected=-1;beep(result===1?880:220);}prevResult=result;render(t);updateUI();syncOnline(t);requestAnimationFrame(frame);}
 let engine;
 function readLocal(key,fallback){try{return JSON.parse(localStorage.getItem(key))??fallback;}catch{return fallback;}}
 function saveLocal(key,value){try{localStorage.setItem(key,JSON.stringify(value));return true;}catch{toast('Salvataggio locale non disponibile in questo browser.');return false;}}
@@ -44,17 +44,94 @@ function recordResult(result){if(!profile)return;profile.games=(profile.games||0
 $('#open-profile').onclick=()=>{$('#profile-name').value=profile?.name||'';$('#profile-stats').textContent=profile?`${profile.games||0} partite · ${profile.wins||0} vittorie`:'Stai giocando come ospite.';$('#profile-editor').showModal();};
 $('#save-profile').onclick=()=>{let name=$('#profile-name').value.trim();profile=name?{name,games:profile?.games||0,wins:profile?.wins||0}:null;saveLocal('cr-profile-v2',profile);$('#profile-editor').close();toast('Profilo aggiornato.');};$('#clear-profile').onclick=()=>{profile=null;saveLocal('cr-profile-v2',null);$('#profile-editor').close();};
 document.querySelectorAll('.close-dialog').forEach(b=>b.onclick=()=>b.closest('dialog').close());
-const net={role:null,peer:null,conn:null,lastSent:0,snapshot:null,ready:false};
-function send(data){if(net.conn?.open)net.conn.send(data);}
+const net={role:null,peer:null,conn:null,snapshot:null,ready:false,suspended:false,generation:0,retryTimer:null,joinTimer:null,recoveryTimer:null,target:null,guestId:null};
 function onlineStatus(text){$('#online-status').textContent=text;}
-function leaveOnline(){net.role=null;net.ready=false;net.conn?.close();net.peer?.destroy();net.conn=null;net.peer=null;wasm=engine;$('#invite-link').value='';onlineStatus('Stanza chiusa.');}
+function clearNetTimer(key){if(net[key]!==null){clearTimeout(net[key]);net[key]=null;}}
+function later(key,ms,callback){clearNetTimer(key);const generation=net.generation;net[key]=setTimeout(()=>{net[key]=null;if(net.role&&net.generation===generation)callback();},ms);}
+function leaveOnline(){const conn=net.conn,peer=net.peer;net.generation++;net.role=null;net.ready=false;net.suspended=false;net.conn=null;net.peer=null;net.target=null;net.guestId=null;for(const key of ['retryTimer','joinTimer','recoveryTimer'])clearNetTimer(key);conn?.close();peer?.destroy();wasm=engine;$('#invite-link').value='';onlineStatus('Stanza chiusa.');}
 function onlineFailure(message){leaveOnline();started=false;paused=false;showOverlay('Connessione terminata',message,'Gioca contro CPU');onlineStatus(message);}
+function armRecovery(){if(net.recoveryTimer!==null)return;later('recoveryTimer',90000,()=>onlineFailure('Riconnessione non riuscita. Riapri la sfida e prova con un nuovo invito.'));}
+function recoverOnline(){if(!net.role||!net.peer||net.peer.destroyed)return;if(net.peer.disconnected){if(net.retryTimer===null)later('retryTimer',1500,()=>{try{if(net.peer?.disconnected&&!net.peer.destroyed)net.peer.reconnect();}catch{recoverOnline();}});return;}if(net.role==='guest'&&net.peer.open&&!net.conn){later('retryTimer',1500,connectGuest);}}
+function connectionLost(conn){if(net.conn!==conn)return;net.conn=null;if(net.ready){net.suspended=true;toast('Connessione instabile: riconnessione in corso…');armRecovery();}onlineStatus(net.role==='host'?'In attesa della riconnessione dell’amico…':'Riconnessione alla stanza…');recoverOnline();}
+function send(data){if(!net.conn?.open)return;try{net.conn.send(data);}catch{const conn=net.conn;connectionLost(conn);conn?.close();}}
 function snapshot(){return {v:[Array.from({length:1},()=>engine.value(11,0)),[engine.value(1,0)],[engine.value(2,0)===1?2:engine.value(2,0)===2?1:engine.value(2,0)],[engine.value(3,0)],Array.from({length:6},(_,i)=>engine.value(4,(i+3)%6)),Array.from({length:4},(_,i)=>engine.value(10,i)),[engine.value(6,1),engine.value(6,0)],[engine.value(7,1),engine.value(7,0)],[engine.value(8,0),720-engine.value(8,1),engine.value(8,2)]],u:Array.from({length:engine.value(3,0)},(_,i)=>[engine.unit(i,0),720-engine.unit(i,1),engine.unit(i,2),1-engine.unit(i,3),engine.unit(i,4),engine.unit(i,5)])};}
 function startOnline(deck){engine.reset();configureDeck(0,savedDeck);configureDeck(1,deck);engine.multiplayer(1);wasm=engine;started=true;paused=false;selected=-1;prevResult=0;lastHand='';net.ready=true;$('#overlay').style.display='none';$('#online-dialog').close();toast('Duel online iniziato!');send({type:'start',snapshot:snapshot()});}
-function bindConnection(conn){net.conn=conn;conn.on('open',()=>{onlineStatus('Collegato. Preparazione battaglia…');if(net.role==='guest')send({type:'hello',deck:savedDeck});});conn.on('data',data=>{if(!data||typeof data!=='object')return;if(net.role==='host'){if(data.type==='hello'&&!net.ready&&validDeck(data.deck))startOnline(data.deck);if(data.type==='play'&&net.ready&&Number.isInteger(data.slot)&&data.slot>=0&&data.slot<4&&Number.isFinite(data.x)&&Number.isFinite(data.y)){let r=engine.enemy_play(data.slot,data.x,data.y);send({type:'played',result:r});}}else{if(data.type==='start'||data.type==='state'){if(!data.snapshot?.v||!data.snapshot?.u)return;net.snapshot=data.snapshot;if(data.type==='start'){wasm={value:(k,i)=>net.snapshot?.v[k]?.[i]??0,unit:(i,k)=>net.snapshot?.u[i]?.[k]??0};started=true;paused=false;selected=-1;prevResult=0;lastHand='';net.ready=true;$('#overlay').style.display='none';$('#online-dialog').close();}}if(data.type==='played'&&data.result!==1)toast(data.result===-1?'Serve più elisir.':'Posizione non valida.');}});conn.on('close',()=>{if(net.role)onlineFailure('L’altro giocatore si è disconnesso.');});conn.on('error',()=>onlineFailure('Errore nella connessione con l’amico.'));}
-async function openPeer(role,id){if(!engine){onlineStatus('Attendi il caricamento del motore.');return;}if(!window.Peer){onlineStatus('Servizio multiplayer non caricato. Ricarica la pagina e verifica la connessione.');return;}leaveOnline();started=false;paused=true;net.role=role;net.peer=new window.Peer(undefined,{config:{iceServers:[{urls:'stun:stun.l.google.com:19302'}]}});onlineStatus('Collegamento al servizio inviti…');const timeout=setTimeout(()=>{if(net.role&&!net.ready)onlineFailure('Connessione scaduta. Crea un nuovo invito e prova da un’altra rete.');},120000);net.peer.on('error',err=>{clearTimeout(timeout);onlineFailure('Collegamento non riuscito: '+(err.type||'rete non disponibile'));});net.peer.on('open',peerId=>{if(role==='host'){let url=new URL(location.href);url.hash='duel='+encodeURIComponent(peerId);$('#invite-link').value=url.href;onlineStatus('Invito pronto. Condividilo e resta su questa pagina.');net.peer.on('connection',conn=>{if(net.conn){conn.close();return;}bindConnection(conn);});}else{bindConnection(net.peer.connect(id,{reliable:true,serialization:'json'}));}});}
-let lastNetwork=0;function syncOnline(t){if(net.role==='host'&&net.ready&&t-lastNetwork>50){lastNetwork=t;send({type:'state',snapshot:snapshot()});}if(net.role&&net.ready&&net.conn&&!net.conn.open)onlineFailure('La connessione è stata interrotta.');}
-$('#open-online').onclick=()=>$('#online-dialog').showModal();$('#create-room').onclick=()=>openPeer('host');$('#leave-room').onclick=()=>{leaveOnline();$('#online-dialog').close();begin();};$('#share-room').onclick=async()=>{let url=$('#invite-link').value;if(!url){onlineStatus('Crea prima un invito.');return;}try{if(navigator.share)await navigator.share({title:'Crown Rush: sfidami!',url});else{await navigator.clipboard.writeText(url);onlineStatus('Link copiato.');}}catch{onlineStatus('Puoi selezionare e copiare il link dal campo invito.');}};
+function bindConnection(conn){
+  net.conn=conn;const generation=net.generation;const current=()=>net.generation===generation&&net.conn===conn;
+  const opened=()=>{if(!current())return;clearNetTimer('joinTimer');onlineStatus('Collegato. Preparazione battaglia…');if(net.role==='guest')send({type:'hello',version:2,deck:savedDeck});};
+  conn.on('open',opened);
+  conn.on('data',data=>{
+    if(!current()||!data||typeof data!=='object')return;
+    if(net.role==='host'){
+      if(data.type==='hello'&&validDeck(data.deck)){
+        clearNetTimer('recoveryTimer');net.suspended=false;
+        if(!net.ready)startOnline(data.deck);else send({type:'start',snapshot:snapshot()});
+      }
+      if(data.type==='play'&&net.ready&&Number.isInteger(data.slot)&&data.slot>=0&&data.slot<4&&Number.isFinite(data.x)&&Number.isFinite(data.y)){let r=engine.enemy_play(data.slot,data.x,data.y);send({type:'played',result:r});}
+    }else{
+      if(data.type==='start'||data.type==='state'){
+        if(!data.snapshot?.v||!data.snapshot?.u)return;
+        net.snapshot=data.snapshot;
+        if(data.type==='start'){
+          clearNetTimer('recoveryTimer');net.suspended=false;
+          wasm={value:(k,i)=>net.snapshot?.v[k]?.[i]??0,unit:(i,k)=>net.snapshot?.u[i]?.[k]??0};
+          started=true;paused=false;selected=-1;if(!net.ready)prevResult=0;lastHand='';net.ready=true;
+          $('#overlay').style.display='none';$('#online-dialog').close();onlineStatus('Sfida collegata.');
+        }
+      }
+      if(data.type==='played'&&data.result!==1)toast(data.result===-1?'Serve più elisir.':'Posizione non valida.');
+    }
+  });
+  conn.on('close',()=>{if(current())connectionLost(conn);});
+  conn.on('error',()=>{if(current()){connectionLost(conn);conn.close();}});
+  if(conn.open)opened();
+}
+function connectGuest(){
+  if(net.role!=='guest'||net.conn||!net.peer?.open)return;
+  onlineStatus('Collegamento all’amico…');
+  try{const conn=net.peer.connect(net.target,{reliable:true,serialization:'json'});bindConnection(conn);
+    later('joinTimer',20000,()=>{if(net.conn===conn&&!conn.open){connectionLost(conn);conn.close();}});
+  }catch{recoverOnline();}
+}
+async function openPeer(role,id){
+  if(!engine){onlineStatus('Attendi il caricamento del motore.');return;}
+  if(!window.Peer){onlineStatus('Servizio multiplayer non caricato. Ricarica la pagina.');return;}
+  leaveOnline();started=false;paused=true;net.role=role;net.target=id;
+  // Keep PeerJS defaults: they include STUN AND the provider's TURN relays.
+  const peer=net.peer=new window.Peer();const generation=net.generation;
+  const current=()=>net.generation===generation&&net.peer===peer;
+  onlineStatus('Collegamento al servizio inviti…');
+  if(role==='guest')armRecovery();
+  peer.on('error',err=>{
+    if(!current())return;
+    if(['network','socket-error','socket-closed','disconnected','peer-unavailable','webrtc'].includes(err.type)){
+      onlineStatus(err.type==='peer-unavailable'?'L’host non è raggiungibile. Attendo che torni alla pagina…':'Rete momentaneamente interrotta: riconnessione in corso…');
+      if(net.role==='guest'&&!net.conn?.open){const old=net.conn;net.conn=null;old?.close();armRecovery();}
+      later('retryTimer',2000,()=>{if(peer.disconnected)recoverOnline();else if(net.role==='guest')connectGuest();});return;
+    }
+    onlineFailure('Collegamento non riuscito: '+(err.type||'errore sconosciuto')+'. Crea un nuovo invito.');
+  });
+  peer.on('disconnected',()=>{if(current()){onlineStatus('Riconnessione al servizio inviti…');recoverOnline();}});
+  peer.on('open',peerId=>{
+    if(!current())return;clearNetTimer('retryTimer');
+    if(role==='host'){
+      const url=new URL(location.href);url.hash='duel='+encodeURIComponent(peerId);$('#invite-link').value=url.href;
+      onlineStatus(net.ready?'Servizio inviti ricollegato.':'Invito pronto: copialo o condividilo. La stanza resta aperta in attesa.');
+    }else connectGuest();
+  });
+  peer.on('connection',conn=>{
+    if(!current()||role!=='host'||(net.guestId&&net.guestId!==conn.peer)||net.conn?.open){conn.close();return;}
+    net.guestId=conn.peer;const old=net.conn;net.conn=null;old?.close();bindConnection(conn);
+  });
+}
+let lastNetwork=0;function syncOnline(t){if(net.role==='host'&&net.ready&&!net.suspended&&t-lastNetwork>50){lastNetwork=t;send({type:'state',snapshot:snapshot()});}}
+function resumeOnline(){if(net.role){recoverOnline();if(net.role==='guest'&&!net.conn?.open)armRecovery();}}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)resumeOnline();});
+window.addEventListener('pageshow',resumeOnline);window.addEventListener('online',resumeOnline);
+$('#open-online').onclick=()=>$('#online-dialog').showModal();$('#create-room').onclick=()=>openPeer('host');$('#leave-room').onclick=()=>{leaveOnline();$('#online-dialog').close();begin();};async function copyInvite(){const url=$('#invite-link').value;if(!url){onlineStatus('Crea prima un invito.');return;}try{await navigator.clipboard.writeText(url);onlineStatus('Link copiato. Puoi inviarlo all’amico.');}catch{$('#invite-link').select();onlineStatus('Seleziona e copia il link dal campo invito.');}}
+$('#copy-room').onclick=copyInvite;
+$('#share-room').onclick=async()=>{const url=$('#invite-link').value;if(!url){onlineStatus('Crea prima un invito.');return;}try{if(navigator.share)await navigator.share({title:'Crown Rush: sfidami!',url});else await copyInvite();}catch(err){if(err.name!=='AbortError')onlineStatus('Usa Copia link per inviare l’invito.');}finally{resumeOnline();}};
+
 const invite=new URLSearchParams(location.hash.slice(1)).get('duel');if(invite&&/^[a-zA-Z0-9_-]{1,100}$/.test(invite)){$('#join-room').hidden=false;$('#join-room').onclick=()=>openPeer('guest',invite);onlineStatus('Hai ricevuto un invito! Scegli il mazzo, poi entra nella sfida.');$('#online-dialog').showModal();}
 
 try{const response=await fetch('./crown_rush.wasm');if(!response.ok)throw new Error('WASM '+response.status);const module=await WebAssembly.instantiate(await response.arrayBuffer(),{});engine=module.instance.exports;wasm=engine;wasm.reset();configureDeck(0,savedDeck);requestAnimationFrame(frame);}catch(err){showOverlay('Caricamento fallito.','Ricarica la pagina per riprovare.','Ricarica','↻');$('#start').onclick=()=>location.reload();console.error(err);}
