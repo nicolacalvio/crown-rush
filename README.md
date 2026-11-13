@@ -64,3 +64,7 @@ node --experimental-vm-modules tests/ui.mjs
 Per aggiornare l'hosting Docker: eseguire `git pull` nel checkout effettivamente usato dal deployment, quindi ricostruire/riavviare esclusivamente il servizio del gioco se gli asset sono copiati nell'immagine. Se `dist/` è montata come volume, aggiornare quella directory è sufficiente. La configurazione Docker e del reverse proxy dipende dal proprio server: questo progetto non la modifica. Ricaricare entrambi i browser, creare un nuovo invito e aprirlo sul secondo dispositivo. Non servono modifiche al modulo WASM per questa correzione.
 
 I test `tests/ui.mjs` includono condivisione mobile simulata, perdita del servizio inviti, stabilità del link, rientro nella partita, retry di host temporaneamente non disponibile e callback obsoleti. La verifica su dispositivi e reti reali resta necessaria.
+
+## Rivincite e uscita dalle sfide online
+
+Al termine della sfida online compare Rivincita: la prima conferma invia una richiesta all'amico, e la nuova partita parte soltanto quando entrambi accettano. La nuova sfida usa i mazzi salvati dai due giocatori. Un'uscita volontaria invia un messaggio di abbandono; l'altro giocatore vede subito l'avviso e Torna indietro. Anche la perdita del canale mostra un avviso con ritorno alla schermata iniziale, mantenendo la finestra di riconnessione per interruzioni temporanee. Il ritorno alla schermata iniziale non avvia una partita contro la CPU. La chiusura improvvisa del browser viene rilevata alla notifica di chiusura del canale WebRTC; il tempo di rilevamento dipende dalla rete.

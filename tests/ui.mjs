@@ -59,7 +59,7 @@ class FakePeer{
 }
 sandbox.window.Peer=FakePeer;
 sandbox.navigator.share=async()=>{const p=created.at(-1);p.disconnected=true;p.open=false;p.emit('error',{type:'network'});p.emit('disconnected');};
-const recovery=new vm.SourceTextModule((await fs.readFile(new URL('../dist/game.js',import.meta.url),'utf8'))+'\nexport {net,openPeer,leaveOnline,resumeOnline,engine};',{context:vm.createContext(sandbox)});
+const recovery=new vm.SourceTextModule((await fs.readFile(new URL('../dist/game.js',import.meta.url),'utf8'))+'\nexport {net,openPeer,leaveOnline,resumeOnline,engine,started,paused,wasm,frame,requestRematch,returnHome};',{context:vm.createContext(sandbox)});
 await recovery.link(noop);await recovery.evaluate();const r=recovery.namespace;
 await r.openPeer('host');const host=created.at(-1);host.open=true;host.emit('open','stable-invite');
 assert.equal(host.args.length,0,'Preserve built-in TURN instead of replacing ICE configuration');
@@ -74,6 +74,21 @@ first.handlers.data({type:'hello',deck:[0,1,2,3,4,5,6,7]});assert.equal(r.net.re
 r.engine.tick(.1);const remaining=r.engine.value(1,0);first.handlers.close();assert.equal(r.net.suspended,true);assert.equal(r.net.role,'host');
 const returning=new Wire();returning.peer='friend';next.emit('connection',returning);returning.handlers.data({type:'hello',deck:[0,1,2,3,4,5,6,7]});assert.equal(r.net.suspended,false);assert.equal(returning.messages.at(-1).type,'start');assert.equal(returning.messages.at(-1).snapshot.v[1][0],remaining,'Rejoining must not reset the battle clock');assert.equal(tasks.size,0);
 first.handlers.close();assert.equal(r.net.conn,returning,'Late close events from old data channels must be ignored');
-r.leaveOnline();assert.equal(tasks.size,0);
+r.leaveOnline();runTimers();assert.equal(tasks.size,0);
 await r.openPeer('guest','temporarily-offline-host');const retrying=created.at(-1);retrying.open=true;retrying.emit('open','guest-id');retrying.emit('error',{type:'peer-unavailable'});assert.equal(r.net.role,'guest');assert.equal(retrying.destroyed,false);assert.ok(tasks.size>0);r.leaveOnline();runTimers();assert.equal(r.net.role,null);
 console.log('PASS: phone share-sheet suspension, stable invitation, signaling reconnect, TURN defaults, unlimited lobby wait, guest retry, resumed match and stale callbacks.');
+
+
+// A finished online round requires both players to accept a rematch.
+await r.openPeer('host');const rematchPeer=created.at(-1);rematchPeer.open=true;rematchPeer.emit('open','rematch-host');
+const opponent=new Wire();opponent.peer='opponent';rematchPeer.emit('connection',opponent);opponent.handlers.data({type:'hello',deck:[0,1,2,3,4,5,6,7]});
+for(let i=0;i<1900;i++)r.engine.tick(.1);
+r.frame(200000);assert.match(element('#start').innerHTML,/Rivincita/);assert.ok(r.engine.value(2,0)>0);
+element('#start').onclick();assert.equal(r.net.role,'host');assert.equal(opponent.messages.at(-1).type,'rematch');assert.ok(r.engine.value(2,0)>0,'Requesting alone must not restart or switch to CPU');
+opponent.handlers.data({type:'rematch',deck:[0,1,2,3,8,9,10,11]});assert.equal(r.engine.value(2,0),0);assert.equal(r.engine.value(1,0),180);assert.equal(opponent.messages.at(-1).type,'start');assert.equal(r.net.role,'host');
+// Explicit departure immediately stops the match and only offers navigation home.
+opponent.handlers.data({type:'leave'});assert.equal(r.net.role,null);assert.equal(r.started,false);assert.match(element('#overlay p').textContent,/ha lasciato/);assert.match(element('#start').innerHTML,/Torna indietro/);
+element('#start').onclick();assert.equal(r.started,false);r.frame(200100);r.frame(200200);assert.equal(r.engine.value(1,0),180,'Back navigation must not start CPU simulation');
+// Leaving locally announces the departure and returns to the idle screen.
+await r.openPeer('host');const leavingPeer=created.at(-1);leavingPeer.open=true;leavingPeer.emit('open','leaving-host');const leavingWire=new Wire();leavingWire.peer='friend';leavingPeer.emit('connection',leavingWire);leavingWire.handlers.data({type:'hello',deck:[0,1,2,3,4,5,6,7]});element('#leave-room').onclick();assert.equal(leavingWire.messages.at(-1).type,'leave');assert.equal(r.started,false);assert.equal(r.net.role,null);runTimers();assert.equal(tasks.size,0);
+console.log('PASS: mutual online rematch, explicit opponent departure, idle back navigation and leave notification without CPU fallback.');
